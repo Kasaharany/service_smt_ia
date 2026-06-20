@@ -288,4 +288,4 @@ with aba2:
                         resposta = "Não consigo pensar agora. Precisa configurar a GOOGLE_API_KEY nos Secrets do Streamlit."
                     
                     st.markdown(resposta)
-                   st.session_state.mensagens_chat.append({"role": "assistant", "content": resposta})
+                  st.session_state.mensagens_chat.append({"role": "assistant", "content": resposta})
