@@ -10,7 +10,7 @@ st.set_page_config(page_title="SMT Closed-Loop AI", page_icon="🏭", layout="wi
 
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    modelo = genai.GenerativeModel('gemini-pro')
+    modelo = genai.GenerativeModel('gemini-2.5-flash')
     ia_pronta = True
 except Exception:
     ia_pronta = False
