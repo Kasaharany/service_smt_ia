@@ -1,83 +1,160 @@
-"""Motor de correlação determinística entre relatórios SPI e AOI."""
-
-from __future__ import annotations
-
-from typing import IO
-
+import time
+from typing import Dict, List, Tuple
 import pandas as pd
+
+from config.settings import (
+    MAX_SOLDER_VOLUME_PERCENT,
+    MIN_SOLDER_VOLUME_PERCENT,
+)
+from core.contracts import DiagnosticResult
 
 
 class SMTDeterministicEngine:
-    """Correlaciona dados de SPI (impressão de pasta) e AOI (inspeção óptica)
-    e aplica regras fixas de causa raiz sobre os desvios encontrados.
+    """
+    Motor determinístico de diagnóstico de causa raiz.
+    Executa correlação relacional entre medições de pasta (SPI) e defeitos ópticos (AOI).
     """
 
-    REQUIRED_SPI_COLUMNS = {"Panel_Barcode", "RefDes", "Volume(%)"}
-    REQUIRED_AOI_COLUMNS = {"Panel_Barcode", "RefDes", "Defect_Type", "Result_AOI"}
+    def __init__(
+        self,
+        min_vol: float = MIN_SOLDER_VOLUME_PERCENT,
+        max_vol: float = MAX_SOLDER_VOLUME_PERCENT,
+    ):
+        self.min_vol = min_vol
+        self.max_vol = max_vol
 
-    def load_spi(self, file: IO) -> pd.DataFrame:
-        df = pd.read_csv(file, decimal=",")
-        missing = self.REQUIRED_SPI_COLUMNS - set(df.columns)
-        if missing:
-            raise ValueError(f"Colunas ausentes no relatório SPI: {', '.join(sorted(missing))}")
-        df["Volume(%)"] = pd.to_numeric(
-            df["Volume(%)"].astype(str).str.replace(",", "."), errors="coerce"
-        )
-        return df.dropna(subset=["Volume(%)"])
+    def evaluate_root_cause(
+        self, defect_type: str, volume_percent: float | None
+    ) -> Tuple[str, str, str]:
+        """
+        Aplica as regras formais do sistema especialista.
+        Retorna uma tupla: (Máquina Culpada, Detalhamento Técnico, Severidade).
+        """
+        defect_clean = str(defect_type).strip().lower()
 
-    def load_aoi(self, file: IO) -> pd.DataFrame:
-        df = pd.read_csv(file, decimal=",")
-        missing = self.REQUIRED_AOI_COLUMNS - set(df.columns)
-        if missing:
-            raise ValueError(f"Colunas ausentes no relatório AOI: {', '.join(sorted(missing))}")
-        return df
-
-    def correlate(self, df_spi: pd.DataFrame, df_aoi: pd.DataFrame) -> pd.DataFrame:
-        merged = pd.merge(df_spi, df_aoi, on=["Panel_Barcode", "RefDes"], how="inner")
-        return merged[merged["Result_AOI"] != "PASS"]
-
-    def diagnose(self, df_cruzado: pd.DataFrame) -> pd.DataFrame:
-        if df_cruzado.empty:
-            return pd.DataFrame(
-                columns=["Placa", "Componente", "Volume SPI (%)", "Defeito AOI", "Causa Raiz", "Recomendação"]
+        if volume_percent is None or pd.isna(volume_percent):
+            return (
+                "NÃO IDENTIFICADO",
+                "Sem registro de inspeção correspondente na base SPI.",
+                "Alta",
             )
-        registros = [self._classify(row) for _, row in df_cruzado.iterrows()]
-        return pd.DataFrame(registros)
 
-    def run(self, spi_file: IO, aoi_file: IO) -> pd.DataFrame:
-        df_spi = self.load_spi(spi_file)
-        df_aoi = self.load_aoi(aoi_file)
-        df_cruzado = self.correlate(df_spi, df_aoi)
-        return self.diagnose(df_cruzado)
+        # Regra 1: Subdeposição severa de pasta
+        if volume_percent < self.min_vol:
+            return (
+                "IMPRESSORA DE PASTA (STENCIL PRINTER)",
+                (
+                    f"Subdeposição crítica ({volume_percent:.1f}%). "
+                    "Causa: entupimento de abertura de estêncil ou pressão insuficiente de rodo."
+                ),
+                "Crítica",
+            )
 
-    def _classify(self, row: pd.Series) -> dict:
-        volume = float(row["Volume(%)"])
-        defeito = row["Defect_Type"]
+        # Regra 2: Sobredeposição severa de pasta
+        if volume_percent > self.max_vol:
+            return (
+                "IMPRESSORA DE PASTA (STENCIL PRINTER)",
+                (
+                    f"Sobredeposição crítica ({volume_percent:.1f}%). "
+                    "Causa: vazamento de pasta sob o estêncil ou snap-off inadequado. Risco de curto."
+                ),
+                "Crítica",
+            )
 
-        # Limiares empíricos: abaixo de 50% a solda não sustenta o componente
-        # (insuficiência de impressão); acima de 130% indica stencil/squeegee
-        # depositando pasta em excesso.
-        if volume < 50 and defeito in {"Missing", "Tombstone"}:
-            causa = "Impressora (Pasta de Solda)"
-            recomendacao = f"Volume insuficiente ({volume:.1f}%). Inspecionar stencil e raspador (squeegee)."
-        elif volume > 130:
-            causa = "Impressora (Pasta de Solda)"
-            recomendacao = f"Volume excessivo ({volume:.1f}%). Verificar stencil entupido ou pressão do squeegee."
-        elif volume > 90 and defeito == "Shift":
-            causa = "Pick & Place"
-            recomendacao = f"Deslocamento de componente sem excesso de pasta associado ({volume:.1f}%). Verificar bico de sucção (nozzle) e alinhamento do feeder."
-        elif defeito in {"Bridge", "Solder Ball"} and volume > 90:
-            causa = "Impressora (Pasta de Solda)"
-            recomendacao = f"Excesso de pasta ({volume:.1f}%) favorecendo formação de pontes. Ajustar stencil/squeegee."
-        else:
-            causa = "Perfil Térmico / Refusão"
-            recomendacao = "Volume de pasta dentro do padrão. Investigar o perfil térmico do forno de refusão."
+        # Regra 3: Volume dentro da janela nominal -> falha mecânica ou térmica posterior
+        if defect_clean in ["missing", "ausente", "ausência"]:
+            return (
+                "POSICIONADORA (PICK & PLACE)",
+                (
+                    f"Volume de pasta conforme ({volume_percent:.1f}%). "
+                    "Causa: falha de sucção no bocal, alimentação de fita ou perda de peça no transporte."
+                ),
+                "Média",
+            )
 
-        return {
-            "Placa": row["Panel_Barcode"],
-            "Componente": row["RefDes"],
-            "Volume SPI (%)": round(volume, 1),
-            "Defeito AOI": defeito,
-            "Causa Raiz": causa,
-            "Recomendação": recomendacao,
-        }
+        if defect_clean in ["shift", "deslocamento", "desalinhado"]:
+            return (
+                "POSICIONADORA (PICK & PLACE)",
+                (
+                    f"Volume de pasta conforme ({volume_percent:.1f}%). "
+                    "Causa: calibração de visão óptica do cabeçote ou desaceleração mecânica inadequada."
+                ),
+                "Média",
+            )
+
+        if defect_clean in ["tombstone", "tombamento", "levantado"]:
+            return (
+                "FORNO DE REFUSÃO / POSICIONADORA",
+                (
+                    f"Volume de pasta aceitável ({volume_percent:.1f}%). "
+                    "Causa: desbalanceamento no perfil térmico das zonas de refluxo ou assimetria mecânica de pad."
+                ),
+                "Alta",
+            )
+
+        if defect_clean in ["bridge", "curto", "curto-circuito"]:
+            return (
+                "FORNO DE REFUSÃO",
+                (
+                    f"Volume nominal aceitável ({volume_percent:.1f}%). "
+                    "Causa: rampa de aquecimento excessiva provocando esparramamento acelerado de fluxo."
+                ),
+                "Alta",
+            )
+
+        return (
+            "AVALIAÇÃO DE PROCESSO",
+            f"Volume medido ({volume_percent:.1f}%). Padrão de defeito não coberto por regras estáticas.",
+            "Baixa",
+        )
+
+    def run_diagnostics(
+        self, spi_df: pd.DataFrame, aoi_df: pd.DataFrame
+    ) -> Tuple[pd.DataFrame, float]:
+        """
+        Executa a correlação relacional em memória e retorna o DataFrame de diagnósticos
+        junto com o tempo total de processamento em milissegundos.
+        """
+        start_time = time.perf_counter()
+
+        # Junção relacional à esquerda via chave composta
+        merged_df = pd.merge(
+            aoi_df,
+            spi_df[["Panel_Barcode", "RefDes", "Volume_Percent"]],
+            on=["Panel_Barcode", "RefDes"],
+            how="left",
+        )
+
+        results: List[Dict] = []
+        for _, row in merged_df.iterrows():
+            barcode = row["Panel_Barcode"]
+            ref_des = row["RefDes"]
+            defect = row["Defect_Type"]
+            vol = row["Volume_Percent"]
+
+            machine, detail, severity = self.evaluate_root_cause(defect, vol)
+
+            result_obj = DiagnosticResult(
+                panel_barcode=barcode,
+                ref_des=ref_des,
+                defect_type=defect,
+                volume_percent=vol if pd.notna(vol) else None,
+                culprit_machine=machine,
+                action_detail=detail,
+                severity=severity,
+            )
+
+            results.append({
+                "Código de Barras": result_obj.panel_barcode,
+                "Posição (RefDes)": result_obj.ref_des,
+                "Defeito na AOI": result_obj.defect_type,
+                "Volume SPI (%)": f"{result_obj.volume_percent:.1f}%" if result_obj.volume_percent is not None else "N/A",
+                "Máquina Culpada": result_obj.culprit_machine,
+                "Diagnóstico Técnico": result_obj.action_detail,
+                "Severidade": result_obj.severity,
+            })
+
+        execution_time_ms = (time.perf_counter() - start_time) * 1000
+        output_df = pd.DataFrame(results)
+
+        return output_df, execution_time_ms

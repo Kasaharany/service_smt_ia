@@ -1,171 +1,120 @@
-"""Views (abas) da interface Streamlit."""
-
-from __future__ import annotations
-
 import streamlit as st
-import PyPDF2
+import pandas as pd
 
+from config.settings import GEMINI_API_KEY
 from core.engine import SMTDeterministicEngine
-
-try:
-    import google.generativeai as genai
-except ImportError:  # pragma: no cover - dependência opcional em runtime
-    genai = None
+from core.ingestion import ingest_inspection_datasets
+from services.llm_service import TechnicalManualAssistant
+from ui.components import (
+    render_diagnostic_table,
+    render_distribution_chart,
+    render_metrics_summary,
+)
 
 
 def render_diagnostic_view(engine: SMTDeterministicEngine) -> None:
-    """Aba de diagnóstico de linha: correlação determinística SPI × AOI."""
-    st.markdown(
-        "Submeta os relatórios da impressora (SPI) e da inspeção final (AOI) "
-        "para isolar, por correlação determinística, a máquina responsável pelo defeito."
+    """Aba 1: Ingestão de relatórios e execução do motor determinístico."""
+    st.subheader("Ingestão de Dados de Inspeção")
+    st.write(
+        "Carregue os relatórios de medição volumétrica (SPI) e detecção de defeitos pós-refusão (AOI)."
     )
 
-    col_spi, col_aoi = st.columns(2)
-    with col_spi:
-        upload_spi = st.file_uploader("Carregar CSV da SPI", type=["csv"])
-    with col_aoi:
-        upload_aoi = st.file_uploader("Carregar CSV da AOI", type=["csv"])
+    col1, col2 = st.columns(2)
+    with col1:
+        spi_file = st.file_uploader(
+            "Relatório SPI (.csv)", type=["csv"], key="upload_spi"
+        )
+    with col2:
+        aoi_file = st.file_uploader(
+            "Relatório AOI (.csv)", type=["csv"], key="upload_aoi"
+        )
 
-    if upload_spi is None or upload_aoi is None:
-        st.info("Carregue os dois relatórios para iniciar a análise.")
-        return
-
-    if not st.button("Executar Análise 🔎", type="primary"):
-        return
-
-    with st.spinner("Correlacionando dados de inspeção..."):
+    if spi_file and aoi_file:
         try:
-            relatorio_df = engine.run(upload_spi, upload_aoi)
-        except ValueError as erro:
-            st.error(f"Erro ao processar os relatórios: {erro}")
-            return
+            spi_df, aoi_df = ingest_inspection_datasets(spi_file, aoi_file)
+            st.success(
+                f"Arquivos validados: SPI ({len(spi_df)} registros) | AOI ({len(aoi_df)} defeitos)"
+            )
 
-    if relatorio_df.empty:
-        st.success("Nenhuma anomalia crítica detetada neste lote.")
-        return
+            if st.button("Executar Diagnóstico de Causa Raiz", type="primary"):
+                with st.spinner("Correlacionando bases de dados..."):
+                    results_df, exec_time = engine.run_diagnostics(spi_df, aoi_df)
 
-    st.warning(f"{len(relatorio_df)} anomalia(s) encontrada(s). Consulte o diagnóstico abaixo.")
-    st.dataframe(relatorio_df, use_container_width=True)
+                st.markdown("---")
+                render_metrics_summary(results_df, exec_time)
+                st.markdown("---")
 
-    csv = relatorio_df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "⬇️ Baixar relatório (CSV)",
-        data=csv,
-        file_name="diagnostico_causa_raiz.csv",
-        mime="text/csv",
-    )
+                col_chart, col_empty = st.columns([2, 1])
+                with col_chart:
+                    render_distribution_chart(results_df)
+
+                render_diagnostic_table(results_df)
+
+                # Exportação do relatório gerado
+                csv_data = results_df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label="Baixar Relatório de Diagnóstico (.csv)",
+                    data=csv_data,
+                    file_name="diagnostico_causa_raiz_smt.csv",
+                    mime="text/csv",
+                )
+
+        except Exception as e:
+            st.error(f"Falha na validação ou processamento dos dados: {str(e)}")
+    else:
+        st.info("Aguardando upload dos arquivos SPI e AOI em formato CSV.")
 
 
 def render_manual_assistant_view() -> None:
-    """Aba de consulta a manuais: assistente técnico contextual apoiado por IA."""
-    st.markdown(
-        "🔒 **Área restrita à equipa de Engenharia.** Converse com o assistente "
-        "ou carregue um manual técnico (PDF) para consulta contextual."
+    """Aba 2: Assistente técnico via LLM com memória volátil para manuais confidenciais."""
+    st.subheader("Assistente Técnico de Processo (Memória Volátil)")
+    st.write(
+        "Consulte procedimentos de regulagem e manutenção em manuais PDF sem persistência em disco."
     )
 
-    modelo = _get_modelo()
-    if modelo is None:
-        st.error("⚠️ Atenção: a chave GOOGLE_API_KEY não está configurada nos Secrets.")
+    # Chave carregada de forma transparente via .env
+    api_key = GEMINI_API_KEY
 
-    if "mensagens_chat" not in st.session_state:
-        st.session_state.mensagens_chat = []
-
-    ficheiro_manual = st.file_uploader("Carregar Base de Conhecimento (PDF)", type=["pdf"])
-    contexto_pdf = ""
-    if ficheiro_manual is not None:
-        with st.spinner("A ler documento técnico..."):
-            contexto_pdf = _extrair_texto_pdf(ficheiro_manual)
-            st.success("Documento carregado na memória temporária.")
-
-    st.divider()
-
-    caixa_chat = st.container(height=400)
-    with caixa_chat:
-        for mensagem in st.session_state.mensagens_chat:
-            with st.chat_message(mensagem["role"]):
-                st.markdown(mensagem["content"])
-
-    pergunta = st.chat_input("Diga 'oi' ou insira um código de erro para debug...")
-    if not pergunta:
+    if not api_key:
+        st.error(
+            "Chave de API do Gemini não encontrada. Defina a variável GEMINI_API_KEY no arquivo .env."
+        )
         return
 
-    st.session_state.mensagens_chat.append({"role": "user", "content": pergunta})
-    with caixa_chat:
-        with st.chat_message("user"):
-            st.markdown(pergunta)
+    pdf_file = st.file_uploader(
+        "Manual de Manutenção / Operação (.pdf)", type=["pdf"], key="upload_pdf"
+    )
 
-        with st.chat_message("assistant"):
-            with st.spinner("A pensar..."):
-                resposta = _gerar_resposta(modelo, contexto_pdf)
-                st.markdown(resposta)
-                st.session_state.mensagens_chat.append({"role": "assistant", "content": resposta})
+    if pdf_file:
+        user_query = st.text_area(
+            "Descreva a falha ou informe o procedimento desejado:",
+            placeholder="Ex: Qual o procedimento para limpeza e alinhamento do bocal da posicionadora?",
+        )
+
+        if st.button("Consultar Manual", type="primary"):
+            if not user_query.strip():
+                st.warning("Por favor, digite uma dúvida antes de consultar.")
+                return
+
+            with st.spinner("Analisando manual técnico..."):
+                try:
+                    assistant = TechnicalManualAssistant(api_key=api_key)
+                    response_text = assistant.query_manual(pdf_file, user_query)
+                    st.markdown("### Parecer do Manual Técnico:")
+                    st.write(response_text)
+                except Exception as e:
+                    st.error(f"Erro na comunicação com a API: {str(e)}")
+    else:
+        st.info("Faça o upload do manual técnico em PDF para habilitar a consulta.")
 
 
 def render_methodology_view() -> None:
-    """Aba de arquitetura e metodologia do sistema."""
-    st.markdown(
-        """
-### 🔬 Arquitetura & Metodologia
-
-O sistema é dividido em dois motores independentes, cada um com um propósito distinto:
-
-**1. Motor Determinístico de Correlação** (`core.engine.SMTDeterministicEngine`)
-- Recebe os relatórios brutos de SPI (impressão de pasta de solda) e AOI (inspeção óptica).
-- Correlaciona os dados por placa (`Panel_Barcode`) e componente (`RefDes`).
-- Aplica regras fixas e auditáveis (limiares de volume × tipo de defeito) para apontar a
-  causa raiz mais provável — sem depender de um modelo de IA generativa.
-- Garante que o mesmo par de relatórios produza sempre o mesmo diagnóstico (reprodutibilidade).
-
-**2. Assistente Técnico Contextual** (`ui.views.render_manual_assistant_view`)
-- Camada opcional apoiada por IA generativa (Google Gemini) para consulta a manuais
-  técnicos em PDF e apoio à engenharia em cenários não cobertos pelas regras determinísticas.
-- Não participa da decisão de causa raiz do motor principal — é puramente consultiva.
-
-Essa separação evita que respostas probabilísticas de um LLM influenciem o diagnóstico
-de causa raiz, mantendo o núcleo do sistema rastreável, auditável e reproduzível.
-        """
-    )
-
-
-def _get_modelo():
-    if genai is None:
-        return None
-    try:
-        genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-        return genai.GenerativeModel("gemini-2.5-flash")
-    except Exception:
-        return None
-
-
-def _extrair_texto_pdf(ficheiro_pdf) -> str:
-    leitor = PyPDF2.PdfReader(ficheiro_pdf)
-    texto = ""
-    for pagina in leitor.pages:
-        conteudo = pagina.extract_text()
-        if conteudo:
-            texto += conteudo + "\n"
-    return texto
-
-
-def _gerar_resposta(modelo, contexto_pdf: str) -> str:
-    if modelo is None:
-        return "Chave de API em falta. Configure GOOGLE_API_KEY nos Secrets do Streamlit."
-
-    instrucoes = (
-        "És um Engenheiro SMT Sênior. Se o técnico disser apenas 'oi', 'olá' ou um "
-        "cumprimento, responde de forma natural e educada. Se for uma dúvida técnica, "
-        "responde em tópicos curtos e diretos."
-    )
-    if contexto_pdf:
-        instrucoes += f"\n\nBaseia-te NESTE MANUAL para responder: {contexto_pdf[:15000]}"
-
-    historico = "\n".join(
-        f"{msg['role']}: {msg['content']}" for msg in st.session_state.mensagens_chat[-5:]
-    )
-    prompt_final = f"{instrucoes}\n\nHistórico da conversa:\n{historico}\n\nResponde à última mensagem."
-
-    try:
-        resposta_ia = modelo.generate_content(prompt_final)
-        return resposta_ia.text
-    except Exception as erro:
-        return f"Erro de comunicação com o servidor de IA: {erro}"
+    """Aba 3: Justificativa técnica e arquitetural para exibição à orientadora."""
+    st.subheader("Fundamentação Arquitetural do Sistema")
+    st.markdown("""
+    ### Princípios de Engenharia de Software Adotados:
+    * **Separação de Responsabilidades (SoC):** Cada módulo possui um domínio estrito (Ingestão, Motor de Inferência, Serviços de IA, Interface).
+    * **Algoritmo Determinístico Linear $O(N + M)$:** O cruzamento das bases de dados é realizado em memória via índices relacionais com busca em tempo constante $O(1)$ por registro.
+    * **Integridade Numérica Absoluta:** O cálculo e classificação de limites de solda são processados via código Python estruturado, evitando alucinações matemáticas frequentes em LLMs generativos.
+    * **Privacidade Industrial e Efemeridade:** Documentos confidenciais são carregados exclusivamente na memória volátil (RAM) e transmitidos via túnel seguro para o modelo de contexto estendido, sem persistência em banco de dados.
+    """)
