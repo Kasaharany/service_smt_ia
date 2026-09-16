@@ -1,7 +1,22 @@
 from typing import BinaryIO, Tuple, Union
+
 import pandas as pd
 
 from config.settings import REQUIRED_AOI_COLUMNS, REQUIRED_SPI_COLUMNS
+
+# Caracteres que o Excel/LibreOffice interpretam como início de fórmula.
+_FORMULA_TRIGGER_CHARS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _neutralize_formula_injection(series: pd.Series) -> pd.Series:
+    """Neutraliza CSV/Formula Injection (CWE-1236) prefixando com aspas simples
+    qualquer valor que comece com um caractere interpretado como fórmula pelo
+    Excel/LibreOffice. Protege relatórios exportados (`to_csv`) que incluem
+    estes campos, vindos de um CSV de origem não totalmente confiável.
+    """
+    return series.apply(
+        lambda value: f"'{value}" if value.startswith(_FORMULA_TRIGGER_CHARS) else value
+    )
 
 
 def validate_and_load_spi_data(
@@ -25,8 +40,8 @@ def validate_and_load_spi_data(
         )
 
     df["Volume_Percent"] = pd.to_numeric(df["Volume_Percent"], errors="coerce")
-    df["Panel_Barcode"] = df["Panel_Barcode"].astype(str).str.strip()
-    df["RefDes"] = df["RefDes"].astype(str).str.strip()
+    df["Panel_Barcode"] = _neutralize_formula_injection(df["Panel_Barcode"].astype(str).str.strip())
+    df["RefDes"] = _neutralize_formula_injection(df["RefDes"].astype(str).str.strip())
 
     return df
 
@@ -50,9 +65,9 @@ def validate_and_load_aoi_data(
             f"Relatório AOI inválido. Colunas ausentes: {sorted(list(missing_cols))}"
         )
 
-    df["Panel_Barcode"] = df["Panel_Barcode"].astype(str).str.strip()
-    df["RefDes"] = df["RefDes"].astype(str).str.strip()
-    df["Defect_Type"] = df["Defect_Type"].astype(str).str.strip()
+    df["Panel_Barcode"] = _neutralize_formula_injection(df["Panel_Barcode"].astype(str).str.strip())
+    df["RefDes"] = _neutralize_formula_injection(df["RefDes"].astype(str).str.strip())
+    df["Defect_Type"] = _neutralize_formula_injection(df["Defect_Type"].astype(str).str.strip())
 
     return df
 

@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 # Localiza o arquivo .env na raiz do projeto com caminho absoluto

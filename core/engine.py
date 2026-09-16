@@ -1,5 +1,6 @@
 import time
 from typing import Dict, List, Tuple
+
 import pandas as pd
 
 from config.settings import (

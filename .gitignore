@@ -5,3 +5,7 @@ __pycache__/
 data/*.csv
 data/*.pdf
 .DS_Store
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
