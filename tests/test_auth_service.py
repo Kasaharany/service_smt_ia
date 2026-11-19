@@ -33,6 +33,11 @@ class TestAuthenticate:
         assert user is not None
         assert user["username"] == "Admin Um"
 
+    def test_login_ignores_accents_on_username(self):
+        user = auth_service.authenticate("Ádmin Üm", "senha-um-123")
+        assert user is not None
+        assert user["username"] == "Admin Um"
+
     def test_wrong_password_returns_none(self):
         assert auth_service.authenticate("Admin Um", "senha-errada") is None
 

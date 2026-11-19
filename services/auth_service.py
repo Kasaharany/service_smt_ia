@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import json
 import secrets as pysecrets
+import unicodedata
 from pathlib import Path
 from typing import Optional
 
@@ -30,7 +31,11 @@ def _hash_password(password: str, salt: bytes) -> str:
 
 
 def _normalize_username(username: str) -> str:
-    return username.strip().lower()
+    """Normaliza para comparação: sem espaços nas pontas, minúsculo e sem
+    acentos/diacríticos (ex.: "Nícolas" e "Nicolas" são tratados como o
+    mesmo usuário, evitando falhas de login por erro de digitação)."""
+    decomposed = unicodedata.normalize("NFKD", username.strip().lower())
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
 
 
 def _load_raw() -> dict:
