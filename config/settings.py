@@ -15,6 +15,15 @@ MAX_SOLDER_VOLUME_PERCENT: float = 150.0  # Acima disso: sobredeposição severa
 DEFAULT_GEMINI_MODEL: str = "gemini-3.6-flash"
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 
+# Contas de administrador-semente (usadas apenas para criar o cadastro de
+# usuários na primeira execução, caso ainda não exista nenhum usuário salvo).
+# Nunca hardcoded no código — vêm do .env localmente ou dos Secrets do
+# Streamlit Cloud em produção.
+ADMIN_SEED_ACCOUNTS: list = [
+    {"name": os.getenv("ADMIN_1_NAME", ""), "password": os.getenv("ADMIN_1_PASSWORD", "")},
+    {"name": os.getenv("ADMIN_2_NAME", ""), "password": os.getenv("ADMIN_2_PASSWORD", "")},
+]
+
 # Contratos de colunas obrigatórias nos arquivos de inspeção
 REQUIRED_SPI_COLUMNS: set = {
     "Panel_Barcode",

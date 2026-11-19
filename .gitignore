@@ -9,3 +9,4 @@ data/*.pdf
 .mypy_cache/
 .ruff_cache/
 .coverage
+data/users.json

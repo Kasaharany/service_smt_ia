@@ -2,6 +2,7 @@ import streamlit as st
 
 from config.settings import GEMINI_API_KEY
 from core.engine import SMTDeterministicEngine
+from ui.auth_views import render_account_sidebar, render_login_view
 from ui.theme import inject_custom_theme
 from ui.views import (
     render_diagnostic_view,
@@ -15,6 +16,9 @@ def _render_sidebar() -> None:
     with st.sidebar:
         st.markdown("## 🏭 Painel do Sistema")
         st.caption("Diagnóstico de Causa Raiz SMT")
+        st.divider()
+
+        render_account_sidebar()
         st.divider()
 
         ia_status = "🟢 Online" if GEMINI_API_KEY else "🔴 Offline"
@@ -44,6 +48,10 @@ def main() -> None:
         initial_sidebar_state="auto",
     )
     inject_custom_theme()
+
+    if "auth" not in st.session_state:
+        render_login_view()
+        return
 
     _render_sidebar()
 
